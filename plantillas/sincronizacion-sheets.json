@@ -1,0 +1,185 @@
+{
+  "name": "Sincronización controlada desde Google Sheets",
+  "nodes": [
+    {
+      "id": "prueba-manual",
+      "name": "Prueba manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "programaci-n",
+      "name": "Programación",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/20 * * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "leer-hoja",
+      "name": "Leer hoja",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        220,
+        100
+      ],
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "={{ $env.HOJA_ID }}"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Seguimiento"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "validar-ediciones",
+      "name": "Validar ediciones",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const EDITABLES = ['responsable', 'notas', 'ultimo_seguimiento'];\nconst FECHA = /^\\d{4}-\\d{2}-\\d{2}$/;\n\nfunction limpiar(valor) {\n  const texto = String(valor ?? '').trim();\n  return texto === '' ? null : texto;\n}\n\nfunction prepararEdiciones(filas) {\n  const validas = [];\n  const rechazadas = [];\n\n  for (const fila of filas) {\n    const id = limpiar(fila.id);\n    const salida = { id };\n    for (const campo of EDITABLES) salida[campo] = limpiar(fila[campo]);\n    const fechaMala = salida.ultimo_seguimiento && !FECHA.test(salida.ultimo_seguimiento);\n    const sinCambios = EDITABLES.every((campo) => salida[campo] === null);\n    if (!id || fechaMala) rechazadas.push({ id, motivo: !id ? 'sin_id' : 'fecha_invalida' });\n    else if (!sinCambios) validas.push(salida);\n  }\n  return { filas: validas, rechazadas, total: validas.length };\n}\n\nconst filas = $input.all().map((i) => i.json);\nreturn [{ json: prepararEdiciones(filas) }];"
+      }
+    },
+    {
+      "id": "-hay-cambios-",
+      "name": "¿Hay cambios?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condicion",
+              "leftValue": "={{ $json.total > 0 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "aplicar-ediciones",
+      "name": "Aplicar ediciones",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE comunidad.miembros AS m\nSET responsable = COALESCE(d.responsable, m.responsable),\n    notas = COALESCE(d.notas, m.notas),\n    ultimo_seguimiento = COALESCE(d.ultimo_seguimiento::date, m.ultimo_seguimiento)\nFROM jsonb_to_recordset($1::jsonb)\n  AS d(id TEXT, responsable TEXT, notas TEXT, ultimo_seguimiento TEXT)\nWHERE m.id = d.id",
+        "options": {
+          "queryReplacement": "={{ [JSON.stringify($json.filas)] }}"
+        }
+      },
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "Prueba manual": {
+      "main": [
+        [
+          {
+            "node": "Leer hoja",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Programación": {
+      "main": [
+        [
+          {
+            "node": "Leer hoja",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer hoja": {
+      "main": [
+        [
+          {
+            "node": "Validar ediciones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar ediciones": {
+      "main": [
+        [
+          {
+            "node": "¿Hay cambios?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay cambios?": {
+      "main": [
+        [
+          {
+            "node": "Aplicar ediciones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

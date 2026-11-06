@@ -1,0 +1,294 @@
+{
+  "name": "Alertas sin duplicados",
+  "nodes": [
+    {
+      "id": "prueba-manual",
+      "name": "Prueba manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "programaci-n",
+      "name": "Programación",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "leer-miembros",
+      "name": "Leer miembros",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, nombre, telefono,\n  to_char(fecha_vencimiento, 'YYYY-MM-DD') AS fecha_vencimiento,\n  to_char(ultimo_seguimiento, 'YYYY-MM-DD') AS ultimo_seguimiento\nFROM comunidad.miembros\nWHERE estado = 'activo'",
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "leer-marcadores",
+      "name": "Leer marcadores",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        440,
+        100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT alert_key FROM comunidad.marcadores_alerta",
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "detectar-alertas",
+      "name": "Detectar alertas",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        100
+      ],
+      "parameters": {
+        "jsCode": "const MS_DIA = 86_400_000;\n\nfunction diasEntre(desde, hasta) {\n  return Math.round((Date.parse(hasta) - Date.parse(desde)) / MS_DIA);\n}\n\nfunction detectarAlertas(miembros, marcadores, hoy, opciones = {}) {\n  const { diasVencimiento = 3, diasSeguimiento = 14 } = opciones;\n  const enviadas = new Set(marcadores.map((m) => m.alert_key));\n  const alertas = [];\n\n  for (const miembro of miembros) {\n    const telefono = String(miembro.telefono ?? '').replace(/[^\\d+]/g, '');\n    if (!telefono) continue;\n    if (miembro.fecha_vencimiento) {\n      const dias = diasEntre(hoy, miembro.fecha_vencimiento);\n      if (dias >= 0 && dias <= diasVencimiento) {\n        alertas.push({\n          alert_key: `VENCE|${miembro.id}|${miembro.fecha_vencimiento}`,\n          miembro_id: miembro.id,\n          tipo: 'VENCE',\n          telefono,\n          texto: `${miembro.nombre}: tu acceso vence el ${miembro.fecha_vencimiento}.`,\n        });\n      }\n    }\n    if (miembro.ultimo_seguimiento && diasEntre(miembro.ultimo_seguimiento, hoy) >= diasSeguimiento) {\n      alertas.push({\n        alert_key: `SEGUIMIENTO|${miembro.id}|${miembro.ultimo_seguimiento}`,\n        miembro_id: miembro.id,\n        tipo: 'SEGUIMIENTO',\n        telefono,\n        texto: `${miembro.nombre} no tiene seguimiento desde el ${miembro.ultimo_seguimiento}.`,\n      });\n    }\n  }\n  return alertas.filter((alerta) => !enviadas.has(alerta.alert_key));\n}\n\nconst miembros = $('Leer miembros').all().map((i) => i.json);\nconst marcadores = $('Leer marcadores').all().map((i) => i.json).filter((m) => m.alert_key);\nconst hoy = new Date().toISOString().slice(0, 10);\nreturn detectarAlertas(miembros, marcadores, hoy).map((json) => ({ json }));"
+      }
+    },
+    {
+      "id": "uno-por-uno",
+      "name": "Uno por uno",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        1100,
+        100
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "enviar-alerta",
+      "name": "Enviar alerta",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        100
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MENSAJES_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MENSAJES_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ telefono: $json.telefono, texto: $json.texto }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "-se-envi-",
+      "name": "¿Se envió?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condicion",
+              "leftValue": "={{ $json.statusCode >= 200 && $json.statusCode < 300 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "guardar-marcador",
+      "name": "Guardar marcador",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1760,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO comunidad.marcadores_alerta (alert_key, miembro_id, tipo)\nSELECT d.alert_key, d.miembro_id, d.tipo\nFROM jsonb_to_record($1::jsonb) AS d(alert_key TEXT, miembro_id TEXT, tipo TEXT)\nON CONFLICT (alert_key) DO NOTHING",
+        "options": {
+          "queryReplacement": "={{ [JSON.stringify($('Uno por uno').item.json)] }}"
+        }
+      },
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "Prueba manual": {
+      "main": [
+        [
+          {
+            "node": "Leer miembros",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Programación": {
+      "main": [
+        [
+          {
+            "node": "Leer miembros",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer miembros": {
+      "main": [
+        [
+          {
+            "node": "Leer marcadores",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Leer marcadores": {
+      "main": [
+        [
+          {
+            "node": "Detectar alertas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detectar alertas": {
+      "main": [
+        [
+          {
+            "node": "Uno por uno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uno por uno": {
+      "main": [
+        null,
+        [
+          {
+            "node": "Enviar alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar alerta": {
+      "main": [
+        [
+          {
+            "node": "¿Se envió?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Se envió?": {
+      "main": [
+        [
+          {
+            "node": "Guardar marcador",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Uno por uno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar marcador": {
+      "main": [
+        [
+          {
+            "node": "Uno por uno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

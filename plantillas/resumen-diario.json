@@ -1,0 +1,293 @@
+{
+  "name": "Resumen diario idempotente",
+  "nodes": [
+    {
+      "id": "prueba-manual",
+      "name": "Prueba manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "programaci-n",
+      "name": "Programación",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "5 7 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "-ya-se-envi-hoy-",
+      "name": "¿Ya se envió hoy?",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        220,
+        100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT CURRENT_DATE::text AS fecha,\n  NOT EXISTS (\n    SELECT 1 FROM comunidad.marcadores_reporte\n    WHERE fecha = CURRENT_DATE AND tipo = 'resumen_diario'\n  ) AS pendiente",
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "-pendiente-",
+      "name": "¿Pendiente?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        100
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condicion",
+              "leftValue": "={{ $json.pendiente }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "calcular-resumen",
+      "name": "Calcular resumen",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  count(*) FILTER (WHERE estado = 'activo')::int AS activos,\n  count(*) FILTER (WHERE estado = 'vencido')::int AS vencidos,\n  count(*) FILTER (\n    WHERE estado = 'activo' AND fecha_vencimiento <= CURRENT_DATE + 7\n  )::int AS vencen_pronto,\n  (SELECT count(*)::int FROM comunidad.marcadores_alerta\n    WHERE enviado_en >= CURRENT_DATE) AS alertas_hoy\nFROM comunidad.miembros",
+        "options": {}
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "id": "armar-mensaje",
+      "name": "Armar mensaje",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        0
+      ],
+      "parameters": {
+        "jsCode": "function construirResumen(datos, fecha) {\n  return [\n    `Resumen del ${fecha}`,\n    `Miembros activos: ${datos.activos}`,\n    `Vencidos: ${datos.vencidos}`,\n    `Vencen en 7 días: ${datos.vencen_pronto}`,\n    `Alertas enviadas hoy: ${datos.alertas_hoy}`,\n  ].join('\\n');\n}\n\nconst datos = $input.first().json;\nconst fecha = $('¿Ya se envió hoy?').first().json.fecha;\nreturn [{ json: { texto: construirResumen(datos, fecha) } }];"
+      }
+    },
+    {
+      "id": "enviar-resumen",
+      "name": "Enviar resumen",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.MENSAJES_URL }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.MENSAJES_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ telefono: $env.REPORTE_TELEFONO, texto: $json.texto }) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "-se-envi-",
+      "name": "¿Se envió?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "condicion",
+              "leftValue": "={{ $json.statusCode >= 200 && $json.statusCode < 300 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "guardar-marcador",
+      "name": "Guardar marcador",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1540,
+        -100
+      ],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO comunidad.marcadores_reporte (fecha, tipo)\nVALUES (CURRENT_DATE, 'resumen_diario')\nON CONFLICT (fecha, tipo) DO NOTHING",
+        "options": {}
+      },
+      "alwaysOutputData": true
+    }
+  ],
+  "connections": {
+    "Prueba manual": {
+      "main": [
+        [
+          {
+            "node": "¿Ya se envió hoy?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Programación": {
+      "main": [
+        [
+          {
+            "node": "¿Ya se envió hoy?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Ya se envió hoy?": {
+      "main": [
+        [
+          {
+            "node": "¿Pendiente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Pendiente?": {
+      "main": [
+        [
+          {
+            "node": "Calcular resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular resumen": {
+      "main": [
+        [
+          {
+            "node": "Armar mensaje",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar mensaje": {
+      "main": [
+        [
+          {
+            "node": "Enviar resumen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar resumen": {
+      "main": [
+        [
+          {
+            "node": "¿Se envió?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Se envió?": {
+      "main": [
+        [
+          {
+            "node": "Guardar marcador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

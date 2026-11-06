@@ -1,0 +1,15 @@
+{
+  "name": "plantillas-n8n",
+  "version": "1.0.0",
+  "description": "Plantillas de n8n con alertas sin duplicados, resumen diario y sincronización controlada.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "construir": "node scripts/construir.js",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.0"
+  }
+}
